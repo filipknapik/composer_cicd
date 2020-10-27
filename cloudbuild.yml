@@ -1,0 +1,43 @@
+steps:
+- id: 'Get GCS Buckets for DAGs'
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  entrypoint: /bin/bash
+  args: ['-c','gcloud composer environments describe ${_ENVIRONMENT} --location=${_REGION} --format="value(config.dagGcsPrefix)" > /workspace/composerbuild_bucket.txt']
+- id: 'Get Airflow version'
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  entrypoint: /bin/bash
+  args: ['-c','gcloud composer environments describe ${_ENVIRONMENT} --location=${_REGION} --format="value(config.softwareConfig.imageVersion)" |  awk -F ''-'' ''{print $4}'' > /workspace/composerbuild_version.txt']
+- id: 'Get PyPi modules'
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  entrypoint: /bin/bash
+  args: ['-c','gcloud composer environments describe ${_ENVIRONMENT} --location=${_REGION} --format="value(config.softwareConfig.pypiPackages)"  | tr -d ''[:space:]'' | tr '';'' ''\n'' | sed ''s/=//'' > /workspace/composerbuild_pypi.txt']
+- id: 'Pull Airflow image'
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: /bin/bash
+  args: ['-c','docker pull gcr.io/cloud-airflow-releaser/airflow-worker-scheduler-$(cat /workspace/composerbuild_version.txt)']
+- id: 'Tag the image'
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: /bin/bash
+  args: ['-c','docker tag gcr.io/cloud-airflow-releaser/airflow-worker-scheduler-$(cat /workspace/composerbuild_version.txt):latest airflowimage:latest']
+- id: 'Apply access restriction'
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  entrypoint: /bin/bash
+  args:
+  - '-c'
+  - |
+    for f in /workspace/*.py
+    do
+      t=$(<$f)
+      subt=${t#*DAG(}
+      shift=$(echo $subt | awk -F "," '{print length($1)}')
+      pos=$(( ${#t} - ${#subt} + 6 + $shift))
+      echo "${t:0:$pos} access_control={'${_TEAM}':{'can_dag_read','can_dag_edit'}},${t:$pos}" > $f
+    done
+- id: '=== Pypi install and run DAGs ==='
+  name: 'airflowimage:latest'
+  entrypoint: /bin/bash
+  args: ['-c','sudo pip3 install --upgrade pip;if [[ `wc -l < /workspace/composerbuild_pypi.txt` > 0 ]]; then sudo pip3 install $(</workspace/composerbuild_pypi.txt); fi; if [ $? -eq 1 ]; then exit 1; fi; for f in /workspace/*.py; do printf "\n******* ${f:11} *******\n";sudo python3 $f; if [ $? -eq 1 ]; then exit 1; fi; done']
+- id: 'Sync files to GCS bucket'
+  name: gcr.io/cloud-builders/gsutil
+  entrypoint: /bin/bash
+  args: ['-c','gsutil rsync -x ''(^\.git\/.*$)|(^cloudbuild.yaml$)|(^airflow_monitoring.py$)|(^composerbuild_[a-zA-Z]*.txt$)'' -d -r ./ $(cat /workspace/composerbuild_bucket.txt)/${_TEAM}']
