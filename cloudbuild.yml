@@ -19,20 +19,6 @@ steps:
   name: 'gcr.io/cloud-builders/docker'
   entrypoint: /bin/bash
   args: ['-c','docker tag gcr.io/cloud-airflow-releaser/airflow-worker-scheduler-$(cat /workspace/composerbuild_version.txt):latest airflowimage:latest']
-- id: 'Apply access restriction'
-  name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
-  entrypoint: /bin/bash
-  args:
-  - '-c'
-  - |
-    for f in /workspace/*.py
-    do
-      t=$(<$f)
-      subt=${t#*DAG(}
-      shift=$(echo $subt | awk -F "," '{print length($1)}')
-      pos=$(( ${#t} - ${#subt} + 6 + $shift))
-      echo "${t:0:$pos} access_control={'${_TEAM}':{'can_dag_read','can_dag_edit'}},${t:$pos}" > $f
-    done
 - id: '=== Pypi install and run DAGs ==='
   name: 'airflowimage:latest'
   entrypoint: /bin/bash
